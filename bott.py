@@ -1,0 +1,168 @@
+import asyncio
+import io
+from telethon import TelegramClient, events
+from telethon.tl.functions.messages import GetBotCallbackAnswerRequest
+from telegram import Update, InputFile
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, filters
+
+# ===== AYARLAR =====
+api_id = 32778223
+api_hash = "ff44a946dbb1dcfd979409f41a69afc9"
+BOT_TOKEN = "8626559225:AAGMk6hd0uDkUuGC30dv05ADoY-fMp_gJhY"
+TARGET_BOT = "inzegosorgubot"
+ADMINS = {8685981899, 6322020905}
+
+# ===== DURUM =====
+banned_users = set()
+pending_user = None
+
+# ===== YASAKLI KELİMELER =====
+blocked_phrases = [
+    "abdurrahman miran karabulak diyarbakır",
+    "miray karabulak diyarbakır",
+    "erol karabulak diyarbakır",
+    "/gsmtc 5337311021"
+]
+
+def is_blocked(text: str) -> bool:
+    t = text.lower().replace("+", " ")
+    return any(b in t for b in blocked_phrases)
+
+# ===== USERBOT =====
+userbot = TelegramClient("userbot_session", api_id, api_hash)
+
+# Hedef bottan gelen mesajları kullanıcıya ilet
+@userbot.on(events.NewMessage(from_users=TARGET_BOT))
+async def target_bot_handler(event):
+    global pending_user
+    if not pending_user:
+        return
+
+    user_id = pending_user
+    try:
+        # DOSYA VARSA
+        if event.message.file:
+            buffer = io.BytesIO()
+            await event.download_media(buffer)
+            buffer.seek(0)
+            filename = event.message.file.name or "sonuc.txt"
+
+            await bot_app.bot.send_document(
+                chat_id=user_id,
+                document=InputFile(buffer, filename=filename),
+                caption=event.raw_text or ""
+            )
+        else:
+            # Mesaj metni varsa direkt kullanıcıya gönder
+            if event.raw_text:
+                await bot_app.bot.send_message(
+                    chat_id=user_id,
+                    text=event.raw_text
+                )
+    except Exception as e:
+        print("Gönderme hatası:", e)
+
+    pending_user = None
+
+# CallbackQuery handling (eğer hedef bot callback kullanıyorsa)
+@userbot.on(events.CallbackQuery)
+async def callback_handler(event):
+    global pending_user
+    try:
+        response = await userbot(GetBotCallbackAnswerRequest(
+            peer=TARGET_BOT,
+            msg_id=event.message.id,
+            data=event.data
+        ))
+        if response.message:
+            await bot_app.bot.send_message(pending_user, response.message)
+        else:
+            await event.answer("✅ İşlem tamamlandı", alert=True)
+    except Exception as e:
+        if pending_user:
+            await bot_app.bot.send_message(pending_user, f"Callback hatası: {e}")
+
+# ===== BOT HANDLER =====
+async def user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global pending_user
+
+    user_id = update.effective_chat.id
+    text = update.message.text
+
+    if user_id in banned_users:
+        await update.message.reply_text("🚫 Bu botu kullanmanız yasaklandı.")
+        return
+
+    if is_blocked(text):
+        await update.message.reply_text("🚫 Bu sorgu engellendi.")
+        return
+
+    # Kullanıcıdan gelen mesajı hedef bota ilet
+    pending_user = user_id
+    await userbot.send_message(TARGET_BOT, text)
+
+# ===== ADMIN KOMUTLARI =====
+async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMINS:
+        return
+    try:
+        uid = int(context.args[0])
+        banned_users.add(uid)
+        await update.message.reply_text(f"✅ {uid} banlandı.")
+    except:
+        await update.message.reply_text("Kullanım: /ban kullanıcı_id")
+
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMINS:
+        return
+    try:
+        uid = int(context.args[0])
+        banned_users.discard(uid)
+        await update.message.reply_text(f"✅ {uid} banı kaldırıldı.")
+    except:
+        await update.message.reply_text("Kullanım: /unban kullanıcı_id")
+
+async def komutlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔎 SORGU KOMUTLARI\n\n"
+        "/sorgu mehmet demir İstanbul\n"
+        "/sorgu mehmet+akif demir İstanbul\n\n"
+        "/gsmtc 5555555555\n"
+        "/ipsorgu 1.1.1.1\n"
+        "/operator 5555555555\n"
+        "/isyeri 11111111110\n"
+        "/tcpro 11111111110\n\n"
+        "📌 TOPLU\n"
+        "/toplu 11111111110\n"
+        "/toplu 5555555555"
+    )
+
+# ===== BOT UYGULAMA =====
+bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+bot_app.add_handler(CommandHandler("ban", ban))
+bot_app.add_handler(CommandHandler("unban", unban))
+bot_app.add_handler(CommandHandler("komutlar", komutlar))
+bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, user_message))
+
+# ===== MAIN =====
+async def main():
+    print("🔹 Userbot başlatılıyor")
+    await userbot.start()
+    print("✅ Userbot aktif")
+
+    print("🔹 Bot başlatılıyor")
+    await bot_app.initialize()
+    print("✅ Bot hazır, polling başlatılıyor")
+    await bot_app.start()
+    await bot_app.run_polling()  # conflict hatası yaşamamak için direkt run_polling
+
+    await asyncio.Future()  # sonsuz döngü
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except RuntimeError:
+        # Termux gibi environmentlarda zaten loop çalışıyorsa bu yöntem ile başlat
+        loop = asyncio.get_event_loop()
+        loop.create_task(main())
+        loop.run_forever()
